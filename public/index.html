@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hangry</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 24px 16px 64px;
+      background: #fafafa;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    p.subtitle { color: #666; margin-top: 0; font-size: 0.9rem; }
+    form {
+      display: flex;
+      gap: 8px;
+      margin: 20px 0;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    button {
+      padding: 12px 18px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: white;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status {
+      font-size: 0.9rem;
+      color: #666;
+      min-height: 1.2em;
+      margin-bottom: 12px;
+    }
+    #status.error { color: #c0392b; }
+    .result {
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+    .result h3 { margin: 0 0 4px; font-size: 1.05rem; }
+    .result .meta {
+      font-size: 0.85rem;
+      color: #555;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .result .address { font-size: 0.85rem; color: #777; }
+    .open-now { color: #1b8a3d; font-weight: 600; }
+    .closed-now { color: #b02a2a; font-weight: 600; }
+    .result { cursor: pointer; }
+    .result .details {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #eee;
+      font-size: 0.85rem;
+    }
+    .result .details.loading { color: #888; }
+    .recommend-chip {
+      display: inline-block;
+      background: #f0f4ff;
+      color: #2a4bd7;
+      border-radius: 999px;
+      padding: 3px 10px;
+      margin: 0 6px 6px 0;
+      font-size: 0.8rem;
+    }
+    .review-snippet {
+      background: #fafafa;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+    }
+    .review-snippet .review-meta {
+      color: #888;
+      font-size: 0.78rem;
+      margin-bottom: 2px;
+    }
+
+    #controls {
+      display: none;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-end;
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      font-size: 0.85rem;
+    }
+    #controls.visible { display: flex; }
+    #controls .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #controls label { color: #555; font-weight: 600; }
+    #controls select {
+      padding: 6px 8px;
+      font-size: 0.85rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: white;
+    }
+    #price-filters {
+      display: flex;
+      gap: 6px;
+    }
+    #price-filters label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-weight: normal;
+      color: #333;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    #price-filters input { margin: 0; }
+  </style>
+</head>
+<body>
+  <h1>Hangry</h1>
+  <p class="subtitle">Alright big back, let's search for a quick bite</p>
+
+  <form id="search-form">
+    <input
+      type="text"
+      id="query-input"
+      placeholder="e.g. cheap tacos open late"
+      autocomplete="off"
+      required
+    />
+    <button type="submit" id="search-button">Search</button>
+  </form>
+
+  <div id="status"></div>
+
+  <div id="controls">
+    <div class="field">
+      <label for="sort-select">Sort by</label>
+      <select id="sort-select">
+        <option value="best" selected>Best match</option>
+        <option value="distance">Distance</option>
+        <option value="rating">Rating</option>
+        <option value="price-low">Price: low to high</option>
+        <option value="price-high">Price: high to low</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="distance-select">Max distance</label>
+      <select id="distance-select">
+        <option value="any" selected>Any distance</option>
+        <option value="0.5">0.5 mi</option>
+        <option value="1">1 mi</option>
+        <option value="2">2 mi</option>
+        <option value="5">5 mi</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Price</label>
+      <div id="price-filters">
+        <label><input type="checkbox" value="1" checked /> $</label>
+        <label><input type="checkbox" value="2" checked /> $$</label>
+        <label><input type="checkbox" value="3" checked /> $$$</label>
+        <label><input type="checkbox" value="4" checked /> $$$$</label>
+      </div>
+    </div>
+  </div>
+
+  <div id="results"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
