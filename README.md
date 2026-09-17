@@ -1,7 +1,6 @@
 # Hangry
 
-Type free-text keywords (e.g. "cheap tacos open late", "quiet spot for a
-first date") and get back real restaurants near your current location,
+Type free-text keywords (e.g. "cheap tacos open late", "gluten free food") and get back real restaurants near your current location,
 anywhere in the world.
 
 ## How it works
