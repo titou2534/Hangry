@@ -38,6 +38,40 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .photo-button {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      font-size: 1rem;
+      border: 1px solid #1a1a1a;
+      border-radius: 8px;
+      background: white;
+      color: #1a1a1a;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .photo-button.busy { opacity: 0.5; pointer-events: none; }
+    #photo-result {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      font-size: 0.9rem;
+    }
+    #photo-result[hidden] { display: none; }
+    #photo-result img {
+      width: 72px;
+      height: 72px;
+      object-fit: cover;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+    #photo-result .dish { font-weight: 600; font-size: 1rem; }
+    #photo-result .note { color: #666; margin-top: 2px; }
     #status {
       font-size: 0.9rem;
       color: #666;
@@ -74,18 +108,49 @@
     .result .details.loading { color: #888; }
     .recommend-chip {
       display: inline-block;
-      background: #f0f4ff;
-      color: #2a4bd7;
+      background: #e8f5ec;
+      color: #1b8a3d;
       border-radius: 999px;
       padding: 3px 10px;
       margin: 0 6px 6px 0;
       font-size: 0.8rem;
     }
+    .recommend-chip.tappable { cursor: pointer; border: 1px solid transparent; }
+    .recommend-chip.tappable:hover { border-color: #1b8a3d; }
+    .recommend-chip.active { background: #1b8a3d; color: white; }
+    .nutrition-btn {
+      margin-top: 8px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      background: #e8f5ec;
+      color: #1b8a3d;
+      border: 1px solid #1b8a3d;
+    }
+    .nutrition-btn.active { background: #1b8a3d; color: white; }
+    .nutrition {
+      margin-top: 6px;
+      padding: 10px 12px;
+      background: #fafafa;
+      border-radius: 8px;
+      font-size: 0.85rem;
+    }
+    .nutrition.loading { color: #888; }
+    .nutrition-head { font-weight: 600; margin-bottom: 8px; }
+    .nutrition-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; }
+    .nutrition-stat .value { font-size: 1.05rem; font-weight: 700; }
+    .nutrition-stat .label { color: #777; font-size: 0.75rem; }
+    .nutrition-note { color: #777; font-size: 0.78rem; margin-top: 4px; }
     .review-snippet {
       background: #fafafa;
       border-radius: 8px;
       padding: 8px 10px;
       margin-bottom: 6px;
+    }
+    .review-snippet .review-why {
+      color: #2a4bd7;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-bottom: 2px;
     }
     .review-snippet .review-meta {
       color: #888;
@@ -150,7 +215,13 @@
       required
     />
     <button type="submit" id="search-button">Search</button>
+    <label class="photo-button" id="photo-label" title="Search by photo">
+      Photo
+      <input type="file" id="photo-input" accept="image/*" hidden />
+    </label>
   </form>
+
+  <div id="photo-result" hidden></div>
 
   <div id="status"></div>
 

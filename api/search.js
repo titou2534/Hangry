@@ -5,11 +5,17 @@
 // The Places API key never leaves the server — it's read from the
 // GOOGLE_PLACES_API_KEY env var, not passed to or from the client.
 
+import { rateLimit, createCache } from "./_lib/guard.js";
+import { parseQuery } from "./_lib/llm.js";
+
 const PLACES_TEXT_SEARCH_URL =
   "https://maps.googleapis.com/maps/api/place/textsearch/json";
 const PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json";
 
 const EARTH_RADIUS_METERS = 6371000;
+const MAX_QUERY_LENGTH = 200;
+
+const searchCache = createCache({ ttlMs: 10 * 60_000, maxEntries: 200 });
 
 // Words that hint at price level or hours. Pulling these out of the free-text
 // query and into structured Places API params keeps them from skewing text
@@ -55,6 +61,33 @@ function parseKeywords(rawQuery) {
   const cleanedQuery = text.replace(/\s+/g, " ").trim();
 
   return { cleanedQuery: cleanedQuery || rawQuery.trim(), minPrice, maxPrice, openNow };
+}
+
+const LLM_PRICE_RANGES = {
+  cheap: { maxPrice: 1 },
+  moderate: { minPrice: 1, maxPrice: 2 },
+  expensive: { minPrice: 3 },
+};
+
+// Prefer Claude's reading of the query; fall back to the regex parser when the
+// key is missing or the call fails.
+async function interpretQuery(rawQuery) {
+  const llm = await parseQuery(rawQuery);
+  if (llm) {
+    const text = [llm.searchText, ...llm.vibe].join(" ").trim();
+    return {
+      cleanedQuery: text || rawQuery.trim(),
+      ...LLM_PRICE_RANGES[llm.price],
+      openNow: llm.openNow,
+      price: llm.price,
+      parsedBy: "llm",
+    };
+  }
+
+  const regex = parseKeywords(rawQuery);
+  const price =
+    regex.maxPrice === 1 ? "cheap" : regex.minPrice >= 3 ? "expensive" : regex.maxPrice === 2 ? "moderate" : "any";
+  return { ...regex, price, parsedBy: "regex" };
 }
 
 function toRadians(degrees) {
@@ -155,6 +188,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!rateLimit(req, res, { name: "search", limit: 15, windowMs: 60_000 })) return;
+
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     console.error("GOOGLE_PLACES_API_KEY is not set");
@@ -176,7 +211,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "'lat'/'lng' must be valid numbers" });
   }
 
-  const { cleanedQuery, minPrice, maxPrice, openNow } = parseKeywords(query);
+  if (query.length > MAX_QUERY_LENGTH) {
+    return res.status(400).json({ error: `'query' must be ${MAX_QUERY_LENGTH} characters or fewer` });
+  }
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+    return res.status(400).json({ error: "'lat'/'lng' are out of range" });
+  }
+
+  const interpreted = await interpretQuery(query);
+  const { cleanedQuery, minPrice, maxPrice, openNow } = interpreted;
 
   // Bias the text search toward the user's location. Radius is in meters;
   // 8km is a reasonable "nearby" default for a first pass.
@@ -194,21 +237,39 @@ export default async function handler(req, res) {
   const url = `${PLACES_TEXT_SEARCH_URL}?${params.toString()}`;
 
   try {
-    const rawResults = await fetchAllPages(url);
+    // Google's data is cached by query + coordinates rounded to ~110m. Distances
+    // are still computed from the caller's exact position below.
+    const cacheKey = [
+      cleanedQuery,
+      minPrice,
+      maxPrice,
+      openNow,
+      `${latitude.toFixed(3)},${longitude.toFixed(3)}`,
+    ].join("|");
+    let cached = searchCache.get(cacheKey);
 
-    // First pass: drop anything Text Search already flagged as closed.
-    const candidates = rawResults.filter(
-      (place) =>
-        place.business_status !== "CLOSED_PERMANENTLY" && place.permanently_closed !== true
-    );
+    if (!cached) {
+      const rawResults = await fetchAllPages(url);
 
-    // Second pass: re-verify against Place Details, which tends to have
-    // fresher status data than Text Search for listings Google is slow to
-    // update.
-    const statusById = await fetchBusinessStatuses(
-      candidates.map((p) => p.place_id),
-      apiKey
-    );
+      // First pass: drop anything Text Search already flagged as closed.
+      const candidates = rawResults.filter(
+        (place) =>
+          place.business_status !== "CLOSED_PERMANENTLY" && place.permanently_closed !== true
+      );
+
+      // Second pass: re-verify against Place Details, which tends to have
+      // fresher status data than Text Search for listings Google is slow to
+      // update.
+      const statusById = await fetchBusinessStatuses(
+        candidates.map((p) => p.place_id),
+        apiKey
+      );
+
+      cached = { candidates, statusById };
+      searchCache.set(cacheKey, cached);
+    }
+
+    const { candidates, statusById } = cached;
 
     const results = candidates
       .filter((place) => statusById.get(place.place_id) !== "CLOSED_PERMANENTLY")
@@ -238,7 +299,15 @@ export default async function handler(req, res) {
       .sort((a, b) => b._score - a._score)
       .map(({ _score, ...place }) => place);
 
-    return res.status(200).json({ results });
+    return res.status(200).json({
+      results,
+      interpretation: {
+        parsedBy: interpreted.parsedBy,
+        searchText: cleanedQuery,
+        price: interpreted.price,
+        openNow,
+      },
+    });
   } catch (err) {
     console.error("Error calling Places API:", err);
     if (err && err.status) {

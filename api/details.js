@@ -6,7 +6,76 @@
 // This is a heuristic, not an AI summary — it just surfaces the noun phrase
 // that follows common recommendation/praise verbs, then ranks by frequency.
 
+import { rateLimit, createCache } from "./_lib/guard.js";
+import { summarizeReviews } from "./_lib/llm.js";
+
 const PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json";
+
+const placeCache = createCache({ ttlMs: 6 * 60 * 60_000, maxEntries: 500 });
+
+async function fetchDetails(placeId, apiKey, sort) {
+  const params = new URLSearchParams({
+    place_id: placeId,
+    fields: "name,reviews,url",
+    reviews_sort: sort,
+    key: apiKey,
+  });
+  const res = await fetch(`${PLACE_DETAILS_URL}?${params.toString()}`);
+  return res.json();
+}
+
+// Google returns at most 5 reviews per request. Pulling both sorts gives the
+// ranking up to 10 distinct reviews to choose from.
+async function fetchPlace(placeId, apiKey) {
+  const [relevant, newest] = await Promise.all([
+    fetchDetails(placeId, apiKey, "most_relevant"),
+    fetchDetails(placeId, apiKey, "newest").catch(() => null),
+  ]);
+
+  if (relevant.status !== "OK") {
+    const err = new Error(relevant.error_message || relevant.status);
+    err.googleStatus = relevant.status;
+    throw err;
+  }
+
+  const seen = new Set();
+  const reviews = [];
+  for (const r of [
+    ...(relevant.result?.reviews || []),
+    ...(newest?.status === "OK" ? newest.result?.reviews || [] : []),
+  ]) {
+    const key = `${r.author_name}|${r.time}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    reviews.push(r);
+  }
+
+  return { name: relevant.result?.name ?? null, url: relevant.result?.url ?? null, reviews };
+}
+
+// Keyword fallback: rank reviews by how many distinct search terms they mention.
+function rankByKeywords(reviews, searchQuery) {
+  const terms = [
+    ...new Set(
+      searchQuery
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length > 2)
+        .map((t) => t.replace(/s$/, ""))
+    ),
+  ];
+  if (terms.length === 0) return [];
+
+  return reviews
+    .map((r, index) => {
+      const text = (r.text || "").toLowerCase();
+      return { index, hits: terms.filter((t) => text.includes(t)).length };
+    })
+    .filter((r) => r.hits > 0)
+    .sort((a, b) => b.hits - a.hits || a.index - b.index)
+    .slice(0, 4)
+    .map((r) => r.index);
+}
 
 // Verb phrases that tend to precede a specific menu item in a review. The
 // captured group runs to the next clause boundary (comma/period/etc) — we
@@ -101,6 +170,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  if (!rateLimit(req, res, { name: "details", limit: 30, windowMs: 60_000 })) return;
+
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     console.error("GOOGLE_PLACES_API_KEY is not set");
@@ -108,44 +179,58 @@ export default async function handler(req, res) {
   }
 
   const { placeId } = req.query;
-  if (!placeId || typeof placeId !== "string") {
+  if (!placeId || typeof placeId !== "string" || placeId.length > 300) {
     return res.status(400).json({ error: "Missing required 'placeId' parameter" });
   }
-
-  const params = new URLSearchParams({
-    place_id: placeId,
-    fields: "name,reviews,url",
-    key: apiKey,
-  });
+  const searchQuery = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 200) : "";
 
   try {
-    const detailsRes = await fetch(`${PLACE_DETAILS_URL}?${params.toString()}`);
-    const data = await detailsRes.json();
-
-    if (data.status !== "OK") {
-      console.error("Place Details error:", data.status, data.error_message);
-      return res.status(502).json({
-        error: "Place Details request failed",
-        status: data.status,
-        message: data.error_message,
-      });
+    let place = placeCache.get(placeId);
+    if (!place) {
+      place = await fetchPlace(placeId, apiKey);
+      placeCache.set(placeId, place);
     }
+    const { reviews } = place;
 
-    const reviews = data.result?.reviews || [];
-    const recommendations = extractRecommendations(reviews);
+    // Claude reads the reviews when available; otherwise the regex miner and
+    // keyword ranking run.
+    const summary = await summarizeReviews(placeId, reviews, searchQuery);
+    const recommendations = summary
+      ? summary.dishes.map((item) => ({ item, mentions: null }))
+      : extractRecommendations(reviews);
+
+    const ranked = summary?.ranked.length
+      ? summary.ranked
+      : rankByKeywords(reviews, searchQuery).map((index) => ({ index, reason: null }));
+    const rankedIndexes = new Set(ranked.map((r) => r.index));
+    const ordered = [
+      ...ranked,
+      ...reviews.map((_, index) => ({ index, reason: null })).filter((r) => !rankedIndexes.has(r.index)),
+    ];
 
     return res.status(200).json({
-      name: data.result?.name ?? null,
-      googleMapsUrl: data.result?.url ?? null,
+      name: place.name,
+      googleMapsUrl: place.url,
       recommendations,
-      reviews: reviews.slice(0, 5).map((r) => ({
-        author: r.author_name,
-        rating: r.rating,
-        text: r.text,
-        relativeTime: r.relative_time_description,
+      vibe: summary?.vibe || null,
+      summarizedBy: summary ? "llm" : "regex",
+      reviews: ordered.slice(0, 6).map(({ index, reason }) => ({
+        author: reviews[index].author_name,
+        rating: reviews[index].rating,
+        text: reviews[index].text,
+        relativeTime: reviews[index].relative_time_description,
+        reason,
       })),
     });
   } catch (err) {
+    if (err?.googleStatus) {
+      console.error("Place Details error:", err.googleStatus, err.message);
+      return res.status(502).json({
+        error: "Place Details request failed",
+        status: err.googleStatus,
+        message: err.message,
+      });
+    }
     console.error("Error calling Place Details API:", err);
     return res.status(500).json({ error: "Failed to fetch place details" });
   }
