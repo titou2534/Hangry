@@ -1,7 +1,7 @@
 # Hangry
 
 Type what you're craving ("cheap tacos open late", "quiet spot for a first
-date"), snap a photo of a dish (real or from a movie or anime), and get real
+date", "gluten free food"), snap a photo of a dish (from an instagram story or even a movie), and get real
 restaurants near you, with reviews ranked for your search and calorie
 estimates for the dishes people recommend.
 
