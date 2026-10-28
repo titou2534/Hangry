@@ -51,30 +51,27 @@
       white-space: nowrap;
     }
     .photo-button.busy { opacity: 0.5; pointer-events: none; }
-    #photo-compose {
+    #photo-attached {
       display: flex;
+      align-items: center;
       gap: 12px;
-      align-items: flex-start;
       background: white;
       border: 1px solid #eee;
       border-radius: 10px;
-      padding: 12px 14px;
+      padding: 8px 12px;
       margin-bottom: 14px;
       font-size: 0.9rem;
     }
-    #photo-compose[hidden] { display: none; }
-    #photo-compose img {
-      width: 96px;
-      height: 96px;
+    #photo-attached[hidden] { display: none; }
+    #photo-attached img {
+      width: 48px;
+      height: 48px;
       object-fit: cover;
       border-radius: 8px;
       flex-shrink: 0;
     }
-    #photo-compose .compose-body { flex: 1; min-width: 0; }
-    #photo-compose label { display: block; font-weight: 600; margin-bottom: 6px; }
-    #photo-compose input { width: 100%; padding: 9px 11px; font-size: 0.9rem; }
-    .compose-actions { display: flex; gap: 8px; margin-top: 8px; }
-    .compose-actions button { padding: 8px 14px; font-size: 0.9rem; }
+    #photo-attached span { flex: 1; min-width: 0; color: #555; }
+    #photo-attached button { padding: 6px 12px; font-size: 0.85rem; }
     button.secondary {
       background: white;
       color: #1a1a1a;
@@ -241,7 +238,6 @@
       id="query-input"
       placeholder="e.g. cheap tacos open late"
       autocomplete="off"
-      required
     />
     <button type="submit" id="search-button">Search</button>
     <label class="photo-button" id="photo-label" title="Search by photo">
@@ -250,22 +246,10 @@
     </label>
   </form>
 
-  <div id="photo-compose" hidden>
-    <img id="photo-compose-img" alt="Your photo" />
-    <div class="compose-body">
-      <label for="photo-hint">Add details (optional)</label>
-      <input
-        type="text"
-        id="photo-hint"
-        maxlength="200"
-        placeholder="e.g. vegetarian, with the egg, from Spirited Away"
-        autocomplete="off"
-      />
-      <div class="compose-actions">
-        <button type="button" id="photo-go">Find it</button>
-        <button type="button" id="photo-cancel" class="secondary">Cancel</button>
-      </div>
-    </div>
+  <div id="photo-attached" hidden>
+    <img id="photo-attached-img" alt="Attached photo" />
+    <span>Photo attached. Add words to refine it (like "wings"), then Search.</span>
+    <button type="button" id="photo-remove" class="secondary">Remove</button>
   </div>
 
   <div id="photo-result" hidden></div>

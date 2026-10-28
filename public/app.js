@@ -10,11 +10,10 @@ const priceCheckboxes = Array.from(document.querySelectorAll("#price-filters inp
 const photoInput = document.getElementById("photo-input");
 const photoLabel = document.getElementById("photo-label");
 const photoResultEl = document.getElementById("photo-result");
-const photoComposeEl = document.getElementById("photo-compose");
-const photoComposeImg = document.getElementById("photo-compose-img");
-const photoHintInput = document.getElementById("photo-hint");
-const photoGoBtn = document.getElementById("photo-go");
-const photoCancelBtn = document.getElementById("photo-cancel");
+const photoAttachedEl = document.getElementById("photo-attached");
+const photoAttachedImg = document.getElementById("photo-attached-img");
+const photoRemoveBtn = document.getElementById("photo-remove");
+const DEFAULT_PLACEHOLDER = input.placeholder;
 
 let cachedPosition = null;
 let lastResults = [];
@@ -382,9 +381,17 @@ async function toggleDetails(card, place) {
 
 function handleSearch(event) {
   event.preventDefault();
+  const text = input.value.trim();
+
+  // With a photo attached, the words in the search bar refine it (like Google Lens).
+  if (pendingPhoto) return searchWithPhoto(text);
+
+  if (!text) {
+    setStatus("Type what you're craving, or attach a photo.");
+    return;
+  }
   photoResultEl.hidden = true;
-  hidePhotoCompose();
-  return runSearch(input.value.trim());
+  return runSearch(text);
 }
 
 async function runSearch(query) {
@@ -509,13 +516,13 @@ function showPhotoResult(food, previewUrl) {
 
 let pendingPhoto = null;
 
-function hidePhotoCompose() {
+function clearPendingPhoto() {
   pendingPhoto = null;
-  photoComposeEl.hidden = true;
-  photoHintInput.value = "";
+  photoAttachedEl.hidden = true;
+  input.placeholder = DEFAULT_PLACEHOLDER;
 }
 
-// Step 1: the user picked a photo. Show a preview with an optional note box.
+// The user picked a photo: attach it to the search bar. Nothing is sent until they press Search.
 async function handlePhotoSelected() {
   const file = photoInput.files[0];
   photoInput.value = "";
@@ -524,11 +531,12 @@ async function handlePhotoSelected() {
   photoLabel.classList.add("busy");
   try {
     pendingPhoto = await prepareImage(file);
+    photoAttachedImg.src = pendingPhoto.previewUrl;
+    photoAttachedEl.hidden = false;
     photoResultEl.hidden = true;
-    photoComposeImg.src = pendingPhoto.previewUrl;
-    photoComposeEl.hidden = false;
-    photoHintInput.focus();
-    setStatus("Add a note if it helps (optional), then tap Find it.");
+    input.placeholder = "Add words to refine it (optional), then Search";
+    input.focus();
+    setStatus("Photo attached. Add words if you like, then tap Search.");
   } catch (err) {
     console.error(err);
     setStatus(err.message || "Couldn't read that image.", true);
@@ -537,12 +545,11 @@ async function handlePhotoSelected() {
   }
 }
 
-// Step 2: send the photo (plus the note, if any) for identification, then search.
-async function submitPhoto() {
-  if (!pendingPhoto) return;
+// Send the photo plus whatever is typed in the search bar, then search for the dish.
+async function searchWithPhoto(note) {
   const { base64, previewUrl } = pendingPhoto;
 
-  photoGoBtn.disabled = true;
+  button.disabled = true;
   resultsEl.innerHTML = "";
   controlsEl.classList.remove("visible");
   setStatus("Looking at your photo...");
@@ -551,40 +558,29 @@ async function submitPhoto() {
     const response = await fetch("/api/identify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image: base64,
-        mediaType: "image/jpeg",
-        hint: photoHintInput.value.trim(),
-      }),
+      body: JSON.stringify({ image: base64, mediaType: "image/jpeg", hint: note }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Couldn't analyze that photo.");
 
-    hidePhotoCompose();
+    clearPendingPhoto();
     showPhotoResult(data.food, previewUrl);
     input.value = data.food.searchText;
     await runSearch(data.food.searchText);
   } catch (err) {
-    // The preview stays up so the user can adjust the note and try again.
+    // The photo stays attached so the user can adjust their words and try again.
     console.error(err);
     setStatus(err.message || "Something went wrong with that photo. Please try again.", true);
   } finally {
-    photoGoBtn.disabled = false;
+    button.disabled = false;
   }
 }
 
 form.addEventListener("submit", handleSearch);
 photoInput.addEventListener("change", handlePhotoSelected);
-photoGoBtn.addEventListener("click", submitPhoto);
-photoCancelBtn.addEventListener("click", () => {
-  hidePhotoCompose();
+photoRemoveBtn.addEventListener("click", () => {
+  clearPendingPhoto();
   setStatus("");
-});
-photoHintInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    submitPhoto();
-  }
 });
 sortSelect.addEventListener("change", applyFiltersAndSort);
 distanceSelect.addEventListener("change", applyFiltersAndSort);
