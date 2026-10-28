@@ -9,7 +9,7 @@ import os
 import re
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import llm
 from .errors import ApiError
@@ -25,6 +25,7 @@ BASE64_PATTERN = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 class IdentifyBody(BaseModel):
     image: str = ""
     mediaType: str = ""
+    hint: str = Field("", max_length=200)
 
 
 # Vision calls cost more than text searches, so the limit is tighter.
@@ -38,7 +39,7 @@ async def identify(body: IdentifyBody):
     if len(body.image) > MAX_BASE64_LENGTH or not BASE64_PATTERN.fullmatch(body.image):
         raise ApiError(400, "That image is too large or isn't valid. Try a smaller photo.")
 
-    food = await llm.identify_food(body.image, body.mediaType)
+    food = await llm.identify_food(body.image, body.mediaType, body.hint)
     if food is None:
         raise ApiError(502, "Couldn't analyze that photo. Please try again.")
     if not food["isFood"] or not food["searchText"]:

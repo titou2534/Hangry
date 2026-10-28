@@ -10,7 +10,8 @@ estimates for the dishes people recommend.
 - **Natural-language search:** Claude turns free text into filters (food, vibe,
   price, open now), with a keyword-matching fallback if Claude is unavailable.
 - **Search by photo:** identifies the dish, including fictional food, and
-  searches for the closest real-world version.
+  searches for the closest real-world version. Add an optional note
+  ("vegetarian", "from Spirited Away") to steer it when the photo is ambiguous.
 - **Ranked results:** rating, review volume, and distance blended into one
   score; sort and filter by price, distance, and rating in the browser.
 - **Reviews that match your search:** Claude picks and explains the most

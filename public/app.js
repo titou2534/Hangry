@@ -10,6 +10,11 @@ const priceCheckboxes = Array.from(document.querySelectorAll("#price-filters inp
 const photoInput = document.getElementById("photo-input");
 const photoLabel = document.getElementById("photo-label");
 const photoResultEl = document.getElementById("photo-result");
+const photoComposeEl = document.getElementById("photo-compose");
+const photoComposeImg = document.getElementById("photo-compose-img");
+const photoHintInput = document.getElementById("photo-hint");
+const photoGoBtn = document.getElementById("photo-go");
+const photoCancelBtn = document.getElementById("photo-cancel");
 
 let cachedPosition = null;
 let lastResults = [];
@@ -378,6 +383,7 @@ async function toggleDetails(card, place) {
 function handleSearch(event) {
   event.preventDefault();
   photoResultEl.hidden = true;
+  hidePhotoCompose();
   return runSearch(input.value.trim());
 }
 
@@ -501,41 +507,85 @@ function showPhotoResult(food, previewUrl) {
   photoResultEl.hidden = false;
 }
 
-async function handlePhoto() {
+let pendingPhoto = null;
+
+function hidePhotoCompose() {
+  pendingPhoto = null;
+  photoComposeEl.hidden = true;
+  photoHintInput.value = "";
+}
+
+// Step 1: the user picked a photo. Show a preview with an optional note box.
+async function handlePhotoSelected() {
   const file = photoInput.files[0];
   photoInput.value = "";
   if (!file) return;
 
   photoLabel.classList.add("busy");
-  photoResultEl.hidden = true;
-  resultsEl.innerHTML = "";
-  controlsEl.classList.remove("visible");
-  setStatus("Looking at your photo...");
-
   try {
-    const { base64, previewUrl } = await prepareImage(file);
-
-    const response = await fetch("/api/identify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: base64, mediaType: "image/jpeg" }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Couldn't analyze that photo.");
-
-    showPhotoResult(data.food, previewUrl);
-    input.value = data.food.searchText;
-    await runSearch(data.food.searchText);
+    pendingPhoto = await prepareImage(file);
+    photoResultEl.hidden = true;
+    photoComposeImg.src = pendingPhoto.previewUrl;
+    photoComposeEl.hidden = false;
+    photoHintInput.focus();
+    setStatus("Add a note if it helps (optional), then tap Find it.");
   } catch (err) {
     console.error(err);
-    setStatus(err.message || "Something went wrong with that photo. Please try again.", true);
+    setStatus(err.message || "Couldn't read that image.", true);
   } finally {
     photoLabel.classList.remove("busy");
   }
 }
 
+// Step 2: send the photo (plus the note, if any) for identification, then search.
+async function submitPhoto() {
+  if (!pendingPhoto) return;
+  const { base64, previewUrl } = pendingPhoto;
+
+  photoGoBtn.disabled = true;
+  resultsEl.innerHTML = "";
+  controlsEl.classList.remove("visible");
+  setStatus("Looking at your photo...");
+
+  try {
+    const response = await fetch("/api/identify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: base64,
+        mediaType: "image/jpeg",
+        hint: photoHintInput.value.trim(),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Couldn't analyze that photo.");
+
+    hidePhotoCompose();
+    showPhotoResult(data.food, previewUrl);
+    input.value = data.food.searchText;
+    await runSearch(data.food.searchText);
+  } catch (err) {
+    // The preview stays up so the user can adjust the note and try again.
+    console.error(err);
+    setStatus(err.message || "Something went wrong with that photo. Please try again.", true);
+  } finally {
+    photoGoBtn.disabled = false;
+  }
+}
+
 form.addEventListener("submit", handleSearch);
-photoInput.addEventListener("change", handlePhoto);
+photoInput.addEventListener("change", handlePhotoSelected);
+photoGoBtn.addEventListener("click", submitPhoto);
+photoCancelBtn.addEventListener("click", () => {
+  hidePhotoCompose();
+  setStatus("");
+});
+photoHintInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    submitPhoto();
+  }
+});
 sortSelect.addEventListener("change", applyFiltersAndSort);
 distanceSelect.addEventListener("change", applyFiltersAndSort);
 priceCheckboxes.forEach((cb) => cb.addEventListener("change", applyFiltersAndSort));
