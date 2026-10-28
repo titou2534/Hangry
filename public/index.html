@@ -51,6 +51,16 @@
       white-space: nowrap;
     }
     .photo-button.busy { opacity: 0.5; pointer-events: none; }
+    #load-more { display: block; width: 100%; margin: 4px 0 16px; }
+    #load-more[hidden] { display: none; }
+    .closed-banner {
+      background: #fdecea;
+      color: #b02a2a;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
     #photo-attached {
       display: flex;
       align-items: center;
@@ -289,6 +299,7 @@
   </div>
 
   <div id="results"></div>
+  <button type="button" id="load-more" class="secondary" hidden>Load more results</button>
 
   <script>
     window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

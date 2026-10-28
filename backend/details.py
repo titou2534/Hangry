@@ -5,7 +5,6 @@ diner's search and summarize standout dishes. Falls back to a regex dish miner
 and keyword ranking when Claude is unavailable.
 """
 
-import asyncio
 import os
 import re
 
@@ -87,48 +86,33 @@ def rank_by_keywords(reviews: list[dict], search_query: str) -> list[int]:
 # --- Google fetching ---------------------------------------------------------
 
 
-async def fetch_details(place_id: str, api_key: str, sort: str) -> dict:
+async def fetch_place(place_id: str, api_key: str) -> dict:
+    """One Place Details call: up to 5 reviews, plus current business status."""
     response = await get_http().get(
         DETAILS_URL,
-        params={"place_id": place_id, "fields": "name,reviews,url", "reviews_sort": sort, "key": api_key},
+        params={
+            "place_id": place_id,
+            "fields": "name,reviews,url,business_status",
+            "reviews_sort": "most_relevant",
+            "key": api_key,
+        },
     )
-    return response.json()
-
-
-async def fetch_place(place_id: str, api_key: str) -> dict:
-    """Google returns at most 5 reviews per request. Pulling both sorts gives
-    the ranking up to 10 distinct reviews to choose from."""
-    relevant, newest = await asyncio.gather(
-        fetch_details(place_id, api_key, "most_relevant"),
-        fetch_details(place_id, api_key, "newest"),
-        return_exceptions=True,
-    )
-
-    if isinstance(relevant, Exception):
-        raise relevant
-    if relevant.get("status") != "OK":
+    data = response.json()
+    if data.get("status") != "OK":
         raise ApiError(
             502,
             "Place Details request failed",
-            status=relevant.get("status"),
-            message=relevant.get("error_message"),
+            status=data.get("status"),
+            message=data.get("error_message"),
         )
 
-    newest_reviews = []
-    if not isinstance(newest, Exception) and newest.get("status") == "OK":
-        newest_reviews = newest.get("result", {}).get("reviews", [])
-
-    seen = set()
-    reviews = []
-    for review in [*relevant.get("result", {}).get("reviews", []), *newest_reviews]:
-        key = (review.get("author_name"), review.get("time"))
-        if key in seen:
-            continue
-        seen.add(key)
-        reviews.append(review)
-
-    result = relevant.get("result", {})
-    return {"name": result.get("name"), "url": result.get("url"), "reviews": reviews}
+    result = data.get("result", {})
+    return {
+        "name": result.get("name"),
+        "url": result.get("url"),
+        "reviews": result.get("reviews", []),
+        "status": result.get("business_status"),
+    }
 
 
 @router.get("/api/details", dependencies=[Depends(rate_limit("details", 30, 60))])
@@ -167,6 +151,7 @@ async def details(
     return {
         "name": place["name"],
         "googleMapsUrl": place["url"],
+        "permanentlyClosed": place["status"] == "CLOSED_PERMANENTLY",
         "recommendations": recommendations,
         "vibe": (summary or {}).get("vibe") or None,
         "summarizedBy": "llm" if summary else "regex",

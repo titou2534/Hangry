@@ -83,5 +83,7 @@ environment variables first (`npx vercel env add NAME production`).
   per-instance. A shared store (e.g. Redis) would make them global.
 - Nutrition values are estimates for a typical restaurant serving, not lab
   values, and not suitable for allergen or medical decisions.
-- Search takes a few seconds on a cold request because every result is
-  re-checked against Google for closed businesses.
+- To keep Google costs down, a search loads 20 results at a time ("Load more"
+  fetches the next 20, up to 60), and only the top 5 results per page are
+  re-checked for permanent closure. A place is checked again when its reviews
+  open, and flagged if Google lists it as closed.

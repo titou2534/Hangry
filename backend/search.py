@@ -28,6 +28,11 @@ METERS_PER_MILE = 1609.34
 # from the caller's exact position.
 _search_cache = TTLCache(10 * 60, 200)
 
+# Only the top-ranked results get a fresh closed-business check (one Place
+# Details call each). Text Search already flags most closures, and a place
+# that is opened gets checked again when its reviews load.
+VERIFY_TOP_N = 5
+
 # Fallback keyword parser, used when Claude is unavailable. Pulling price and
 # hours words out of the free text and into structured Places parameters keeps
 # them from skewing text relevance.
@@ -126,40 +131,30 @@ def rank_score(rating, user_ratings_total, distance_in_meters: float) -> float:
     return rating_score * (1 + review_weight) - distance_penalty * 0.4
 
 
-async def fetch_all_pages(params: dict, api_key: str, max_pages: int = 3) -> list[dict]:
-    """Google paginates in batches of ~20 (max 60). A next_page_token isn't
-    valid for a couple of seconds after it is issued."""
-    http = get_http()
-    results: list[dict] = []
-    page_params = params
+async def fetch_page(params: dict) -> dict:
+    """One Text Search request: up to 20 results plus a token for the next 20."""
+    data = (await get_http().get(TEXT_SEARCH_URL, params=params)).json()
+    if data.get("status") not in ("OK", "ZERO_RESULTS"):
+        raise ApiError(
+            502,
+            "Places API request failed",
+            status=data.get("status"),
+            message=data.get("error_message"),
+        )
+    return data
 
-    for page in range(max_pages):
-        data = (await http.get(TEXT_SEARCH_URL, params=page_params)).json()
 
-        if data.get("status") not in ("OK", "ZERO_RESULTS"):
-            if page == 0:
-                raise ApiError(
-                    502,
-                    "Places API request failed",
-                    status=data.get("status"),
-                    message=data.get("error_message"),
-                )
-            break
-
-        results.extend(data.get("results", []))
-
-        token = data.get("next_page_token")
-        if not token:
-            break
-        await asyncio.sleep(2)
-        page_params = {"pagetoken": token, "key": api_key}
-
-    return results
+def drop_known_closed(places: list[dict]) -> list[dict]:
+    return [
+        p
+        for p in places
+        if p.get("business_status") != "CLOSED_PERMANENTLY" and p.get("permanently_closed") is not True
+    ]
 
 
 async def fetch_business_statuses(place_ids: list[str], api_key: str) -> dict[str, str | None]:
-    """Text Search's business_status can lag reality, so double-check each
-    place against Place Details, which Google keeps fresher."""
+    """Text Search's business_status can lag reality, so double-check against
+    Place Details, which Google keeps fresher."""
     http = get_http()
 
     async def lookup(place_id: str):
@@ -179,11 +174,58 @@ async def fetch_business_statuses(place_ids: list[str], api_key: str) -> dict[st
     return dict(await asyncio.gather(*(lookup(pid) for pid in place_ids)))
 
 
+async def rank_and_verify(entry: dict, lat: float, lng: float, api_key: str) -> list[dict]:
+    """Rank a page of candidates, then closure-check only the top few."""
+    ranked = []
+    for place in entry["candidates"]:
+        location = (place.get("geometry") or {}).get("location")
+        distance = distance_meters(lat, lng, location["lat"], location["lng"]) if location else None
+        score = rank_score(
+            place.get("rating"),
+            place.get("user_ratings_total"),
+            distance if distance is not None else 8000,
+        )
+        ranked.append((score, place, location, distance))
+    ranked.sort(key=lambda r: r[0], reverse=True)
+
+    # statuses[place_id] exists once a place has been checked (None = unknown).
+    # Removing a closed place can pull a new one into the top N, so repeat.
+    statuses = entry["statuses"]
+    while True:
+        still_open = [r for r in ranked if statuses.get(r[1]["place_id"]) != "CLOSED_PERMANENTLY"]
+        unchecked = [r[1]["place_id"] for r in still_open[:VERIFY_TOP_N] if r[1]["place_id"] not in statuses]
+        if not unchecked:
+            break
+        statuses.update(await fetch_business_statuses(unchecked, api_key))
+
+    results = []
+    for _, place, location, distance in still_open:
+        status = statuses.get(place["place_id"])
+        results.append(
+            {
+                "name": place.get("name"),
+                "rating": place.get("rating"),
+                "userRatingsTotal": place.get("user_ratings_total"),
+                "priceLevel": place.get("price_level"),
+                "address": place.get("formatted_address") or place.get("vicinity"),
+                "openNow": (place.get("opening_hours") or {}).get("open_now"),
+                "temporarilyClosed": place.get("business_status") == "CLOSED_TEMPORARILY"
+                or status == "CLOSED_TEMPORARILY",
+                "placeId": place["place_id"],
+                "location": location,
+                "distanceMeters": distance,
+                "distanceText": format_distance(distance) if distance is not None else None,
+            }
+        )
+    return results
+
+
 @router.get("/api/search", dependencies=[Depends(rate_limit("search", 15, 60))])
 async def search(
     query: str = Query(..., max_length=200),
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
+    page_token: str | None = Query(None, alias="pageToken", max_length=2000),
 ):
     api_key = os.environ.get("GOOGLE_PLACES_API_KEY")
     if not api_key:
@@ -191,6 +233,8 @@ async def search(
     if not query.strip():
         raise ApiError(400, "Missing required 'query' parameter")
 
+    # The query was already interpreted by the first search, so on "load more"
+    # this is a cache hit and costs no extra Claude call.
     interpreted = await interpret_query(query)
     cleaned_query = interpreted["cleanedQuery"]
     min_price, max_price, open_now = (
@@ -215,65 +259,36 @@ async def search(
     if open_now:
         params["opennow"] = "true"
 
-    cache_key = "|".join(map(str, [cleaned_query, min_price, max_price, open_now, f"{lat:.3f},{lng:.3f}"]))
-    cached = _search_cache.get(cache_key)
-
-    if cached is None:
-        raw_results = await fetch_all_pages(params, api_key)
-
-        # First pass: drop anything Text Search already flagged as closed.
-        candidates = [
-            p
-            for p in raw_results
-            if p.get("business_status") != "CLOSED_PERMANENTLY" and p.get("permanently_closed") is not True
-        ]
-        # Second pass: re-verify against Place Details.
-        statuses = await fetch_business_statuses([p["place_id"] for p in candidates], api_key)
-
-        cached = {"candidates": candidates, "statuses": statuses}
-        _search_cache.set(cache_key, cached)
-
-    results = []
-    for place in cached["candidates"]:
-        status = cached["statuses"].get(place["place_id"])
-        if status == "CLOSED_PERMANENTLY":
-            continue
-
-        location = (place.get("geometry") or {}).get("location")
-        distance = distance_meters(lat, lng, location["lat"], location["lng"]) if location else None
-
-        results.append(
-            {
-                "name": place.get("name"),
-                "rating": place.get("rating"),
-                "userRatingsTotal": place.get("user_ratings_total"),
-                "priceLevel": place.get("price_level"),
-                "address": place.get("formatted_address") or place.get("vicinity"),
-                "openNow": (place.get("opening_hours") or {}).get("open_now"),
-                "temporarilyClosed": place.get("business_status") == "CLOSED_TEMPORARILY"
-                or status == "CLOSED_TEMPORARILY",
-                "placeId": place["place_id"],
-                "location": location,
-                "distanceMeters": distance,
-                "distanceText": format_distance(distance) if distance is not None else None,
-                "_score": rank_score(
-                    place.get("rating"),
-                    place.get("user_ratings_total"),
-                    distance if distance is not None else 8000,
-                ),
-            }
+    if page_token:
+        # Google only accepts a page token together with the original search
+        # parameters, so it is added on top of them.
+        data = await fetch_page({**params, "pagetoken": page_token})
+        entry = {
+            "candidates": drop_known_closed(data.get("results", [])),
+            "statuses": {},
+            "next_token": data.get("next_page_token"),
+        }
+        interpretation = None
+    else:
+        cache_key = "|".join(
+            map(str, [cleaned_query, min_price, max_price, open_now, f"{lat:.3f},{lng:.3f}"])
         )
+        entry = _search_cache.get(cache_key)
+        if entry is None:
+            data = await fetch_page(params)
+            entry = {
+                "candidates": drop_known_closed(data.get("results", [])),
+                "statuses": {},
+                "next_token": data.get("next_page_token"),
+            }
+            _search_cache.set(cache_key, entry)
 
-    results.sort(key=lambda r: r["_score"], reverse=True)
-    for r in results:
-        del r["_score"]
-
-    return {
-        "results": results,
-        "interpretation": {
+        interpretation = {
             "parsedBy": interpreted["parsedBy"],
             "searchText": cleaned_query,
             "price": interpreted["price"],
             "openNow": open_now,
-        },
-    }
+        }
+
+    results = await rank_and_verify(entry, lat, lng, api_key)
+    return {"results": results, "nextPageToken": entry["next_token"], "interpretation": interpretation}

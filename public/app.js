@@ -10,6 +10,7 @@ const priceCheckboxes = Array.from(document.querySelectorAll("#price-filters inp
 const photoInput = document.getElementById("photo-input");
 const photoLabel = document.getElementById("photo-label");
 const photoResultEl = document.getElementById("photo-result");
+const loadMoreBtn = document.getElementById("load-more");
 const photoAttachedEl = document.getElementById("photo-attached");
 const photoAttachedImg = document.getElementById("photo-attached-img");
 const photoRemoveBtn = document.getElementById("photo-remove");
@@ -19,6 +20,8 @@ let cachedPosition = null;
 let lastResults = [];
 let lastInterpretation = null;
 let lastQuery = "";
+let lastCoords = null;
+let nextPageToken = null;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -294,6 +297,13 @@ async function toggleDetails(card, place) {
     detailsEl.classList.remove("loading");
     detailsEl.innerHTML = "";
 
+    if (data.permanentlyClosed) {
+      const closed = document.createElement("div");
+      closed.className = "closed-banner";
+      closed.textContent = "Google lists this place as permanently closed.";
+      detailsEl.appendChild(closed);
+    }
+
     if (data.vibe) {
       const vibe = document.createElement("div");
       vibe.style.marginBottom = "8px";
@@ -379,6 +389,42 @@ async function toggleDetails(card, place) {
   }
 }
 
+function updateLoadMore() {
+  loadMoreBtn.hidden = !nextPageToken;
+  loadMoreBtn.disabled = false;
+  loadMoreBtn.textContent = "Load more results";
+}
+
+// Fetch the next page of results (Google serves 20 at a time) and add it to the list.
+async function loadMore() {
+  if (!nextPageToken || !lastCoords) return;
+
+  loadMoreBtn.disabled = true;
+  loadMoreBtn.textContent = "Loading...";
+
+  try {
+    const params = new URLSearchParams({
+      query: lastQuery,
+      lat: String(lastCoords.latitude),
+      lng: String(lastCoords.longitude),
+      pageToken: nextPageToken,
+    });
+    const response = await fetch(`/api/search?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Couldn't load more results.");
+
+    const known = new Set(lastResults.map((p) => p.placeId));
+    lastResults = [...lastResults, ...(data.results || []).filter((p) => !known.has(p.placeId))];
+    nextPageToken = data.nextPageToken || null;
+    applyFiltersAndSort();
+    updateLoadMore();
+  } catch (err) {
+    console.error(err);
+    setStatus("Couldn't load more results. Try searching again.", true);
+    updateLoadMore();
+  }
+}
+
 function handleSearch(event) {
   event.preventDefault();
   const text = input.value.trim();
@@ -397,6 +443,8 @@ function handleSearch(event) {
 async function runSearch(query) {
   if (!query) return;
   lastQuery = query;
+  nextPageToken = null;
+  updateLoadMore();
 
   button.disabled = true;
   resultsEl.innerHTML = "";
@@ -406,6 +454,7 @@ async function runSearch(query) {
   try {
     const position = await getPosition();
     const { latitude, longitude } = position.coords;
+    lastCoords = { latitude, longitude };
 
     setStatus("Searching...");
 
@@ -424,6 +473,7 @@ async function runSearch(query) {
 
     lastResults = data.results || [];
     lastInterpretation = data.interpretation || null;
+    nextPageToken = data.nextPageToken || null;
 
     // Reset filter/sort controls for the new search.
     sortSelect.value = "best";
@@ -432,6 +482,7 @@ async function runSearch(query) {
 
     controlsEl.classList.toggle("visible", lastResults.length > 0);
     applyFiltersAndSort();
+    updateLoadMore();
   } catch (err) {
     console.error(err);
     if (err.code === 1) {
@@ -578,6 +629,7 @@ async function searchWithPhoto(note) {
 
 form.addEventListener("submit", handleSearch);
 photoInput.addEventListener("change", handlePhotoSelected);
+loadMoreBtn.addEventListener("click", loadMore);
 photoRemoveBtn.addEventListener("click", () => {
   clearPendingPhoto();
   setStatus("");
